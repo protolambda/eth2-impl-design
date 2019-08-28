@@ -4,17 +4,75 @@
 
 This repository documents client implementation design choices, without making them part of the official documentation.
 
-Maintained by @protolambda. Suggestions welcome.
+Maintained by @protolambda. Suggestions welcome. This is a non-exhaustive list, there is still room for more optimizations.
 
 ----
 
 ## Phase 0
 
-### State transition optimizations
-
 Spec: [`ethereum/eth2.0-specs/specs/core/0_beacon-chain.md`](https://github.com/ethereum/eth2.0-specs/blob/master/specs/core/0_beacon-chain.md)
 
-#### Shuffling
+#### Epoch transition
+
+The epoch transition is generally heavy, but also re-uses a lot of data.
+The spec naively recomputes this data. Instead, an implementation can prepare the necessary computations, and then run the transition more efficiently.
+
+- Epoch preparation (i.e. start of epoch) pre-computation
+- Pre-Epoch-processing (i.e. end of epoch) pre-computation
+- Epoch data rotation (`previous <- current`) / caching
+
+##### Epoch preparation (i.e. start of epoch) pre-computation
+
+It is good to pre-compute the **shuffling as a full list**, and then the **prepare the committees** for easy access.
+This data does not change throughout the epoch, and is known one epoch in advance.
+It is also used outside of the epoch transition function; storing it per-epoch in some cache for cheap lookups is advisable.
+
+**Proposer indices** are based on shuffling, and can be pre-computed for the epoch as well.
+The computation of the indices themselves can also be optimized, aside from shuffling:
+the effective-balance checking loop re-uses the a hash for different randomness bytes.
+
+Justification and rewarding also depends on the **attesters data of the previous epoch**.
+This data is updated every epoch. During the state transition,
+ you do not want to search every attestation to find the participation details of a single attester.
+ 
+Instead, the attester data can be efficiently represented as a list of flags.
+Iterate over the attestations, and mark the flags for each attester.
+The state transition can then check efficiently if an attester
+ has to get a certain reward and/or contributes to a justification.
+
+
+##### Pre-Epoch-processing (i.e. end of epoch) pre-computation
+
+At the end of the epoch, all crosslinking through attestations is over,
+ and needs to be made effective in the state.
+Instead of checking the winning crosslink naively for every committee, one can also go over all attestations,
+ and compute the winning crosslinks first, without parsing/weighing an attestation twice.
+Then use these computed crosslinks for crosslinking and for the crosslink rewards.
+
+Note that not all shards may have a committee assigned on low validator numbers, some shards may not have a winning crosslink.  
+
+##### Epoch data rotation (`previous <- current`) / caching
+
+Some of the precomputed data does not change for the next epoch, and is still relevant. To not re-compute this, it can be rotated to its new place.
+
+- **Rotate shuffling data, committee indices**: shuffling of current epoch becomes shuffling of previous epoch.
+- **Rotate proposer indices**: proposers of current epoch become the proposers of the next epoch.
+- **Rotate start shards**: the next epoch potentially starts assigning committees from a different initial shard.
+Since start-shards allow for translation of a (shard, epoch) pair to a slot, and are really minimal, it is nice to keep around for getting the slots of older attestations. Rotate the current start shard out into a trail of previous start-shards.
+Note: including the slot number in attestations themselves, although redundant information, may be introduced later, as it removes the need for this (ugly) cache of start-shards.
+
+#### Block transition
+
+When checking validity of indices in a set, and if the set is really just a sorted list, it is sufficient to just check the last index.
+
+When checking overlap of two sets of indices, this can be done efficiently through a "zig-zag merge join".
+This iterates the two sorted lists in parallel, going back and forth to check if the two sides are not equal.
+
+When checking a lot of participations in any collection of committee bitfields, the bitfields can be ORed first to reduce the lookup to one bit check per validator.
+
+Eth1 votes can safely be only counted when half of the voting period is completed, since a majority is needed.
+
+### Shuffling
 
 The shuffling follows "Swap or Not": an algorithm that can be reversed almost trivially.
 It was introduced here: [`eth2.0-specs#576`](https://github.com/ethereum/eth2.0-specs/pull/576)
@@ -30,6 +88,10 @@ This however allocates a bulk of unnecessary hashes. As you only need 1 input bu
 A Go implementation implementing the allocation optimization can be found here: [`protolambda/eth2-shuffle`](https://github.com/protolambda/eth2-shuffle)
 
 Visualization of algorithm here: [`protolambda/eth2-docs#shuffling`](https://github.com/protolambda/eth2-docs#shuffling)
+
+If concurrency is cheap and available, the shuffling can also be executed to compute mappings of slices of rounds.
+E.g. `0->30`, `30->60`, `60->90`. The shuffling-transformations of these slices can then be merged back into `0->90`.
+This is an experimental optimization, only really making sense in 1) a fully sequential sync 2) a split second on mainnet transitions with multiple cores available.
 
 ### BLS
 
