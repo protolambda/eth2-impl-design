@@ -40,7 +40,7 @@ And the temporary Eth2.0 BLS spec here: [`ethereum/eth2.0-specs/specs/bls_signat
 The core ideas here are:
 - The aggregation of signatures lowers network bandwidth.
 - The aggregation of pubkeys before verifying an aggregate signature allows for cheaper verification.
-    - *Iff* the message is the same. Like attestation data. See applications by clients here:
+    - When the message is the same. Like attestation data. See applications by clients here:
         - [Go BLS (phoreproject, used by Prysm)](https://github.com/phoreproject/bls/pull/11)
         - [JS, Lodestar](https://github.com/ChainSafe/lodestar/pull/406)
         - [Rust Milagro, fork by Sigma Prime](https://github.com/sigp/milagro_bls/blob/33716bcdba6560f5b980f4ffae1a338c61058ee5/benches/bls381_benches.rs#L180)
@@ -69,7 +69,7 @@ General optimizations are:
 
 #### Serialization
 
-Although SSZ does not support streaming, you can still write to and write from a stream.
+Although SSZ does not support streaming, you can still write to and read from a stream.
 For dynamic data this means you need to know the size, which means:
 - for encoding: use the array-length for bottom types (most cases). Recursive length lookups may be necessary however, but are not too expensive.
 - for decoding: read the first offset to determine the element count, and then allocate a typed array for it (if the length is valid).
@@ -92,7 +92,7 @@ Hash-tree-root is effectively just recursive merkleization. For this to work, a 
 - Merge towards the root as soon as possible, instead of allocating for every branch in the tree. This reduces the memory requirements from `2*N` to `N`.
   See [here](https://github.com/ethereum/eth2.0-specs/blob/5f1cdc4acca1bb3235efdc5b63dbf9c74c4c312e/test_libs/pyspec/eth2spec/utils/merkle_minimal.py#L47) in the pyspec, also implemented in ZSSZ.
 - Do not allocate a leaf chunk for each node in the tree. Instead, provide a callback to get a leaf instead of the full computed list of leaves.
-  It is implemented [here](https://github.com/protolambda/zssz/blob/632f11e5e281660402bd0ac58f76090f3503def0/merkle/merkleize.go#L63) in ZSSZ, the SSZ code for the ZRNT (Go-spec).
+  It is implemented [here](https://github.com/protolambda/zssz/blob/632f11e5e281660402bd0ac58f76090f3503def0/merkle/merkleize.go#L63) in ZSSZ, the SSZ code for ZRNT (Go-spec).
   Together with the other optimization, this reduces memory requirements to `O(log(N))`.
 - Re-use the SHA-256 state machine object to create checksums with. A SIMD SHA-256 version can be nice for hashing long series of bytes (flat-hashes),
   but it may not make as much of a difference when hashing just 64 bytes at a time. Re-using one input buffer and SHA-256 state can be more effective.
