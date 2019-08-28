@@ -127,7 +127,96 @@ Note that caching serialization is not very effective, focus should be on hash-t
 
 ### Storage and Caching
 
-TODO
+The intention here is not to come up with the most efficient super-generalized merkle DB. Both for interop and later on, storage is an ever optimizable thing.
+Go-ethereum still has lots of room for optimization, yet is running well enough.
+What can be done, is outlining the different approaches, what needs to be stored, and general trade-offs.
+
+#### Approaches
+
+- Store full state copies
+  - every slot: lots and lots of duplication, but super simple to query specific data.
+  - every block: data is only really changed because of a block, slot transitions are cheap to re-do.
+  - every epoch: blocks are more costly to re-do, but with the use of a cache for transitions within the same epoch, it is manageable.
+    - still duplicates data over different epochs. E.g. historical roots.
+    - there may be forks with different epoch start-data.
+- Segmented history
+    - Finalized <> Non finalized.
+        - Assuming no emergency rollbacks past finalized data, forks before the finalized checkpoint can be pruned.
+        - Data with no forks is easier to index.
+        - Some safety margin before the finalized epoch may need to be fully stored still.
+    - Chunkified
+        - One could chunk N epochs together, and store overlapping data more efficiently.
+- Merkle-like
+    - Store the state as a tree: for each block, store the new root of the tree. Unchanged subtrees can stay as-is.
+        - State modifications are generally minimized in the specification design.
+        - Non-minimal modifications (e.g. balance updates) are kept separate from the less changing data.
+        - Appending to history happens in a modulo manner, to rotate out state by overwriting the last element,
+          instead of shifting every single element in the tree.
+    - Naturally deduplicates state, even between forks, and data that loops back and forth between two or more states.
+    - Much slower to update
+    - Lookups can be significantly slower, depending on the available tree data.
+    - Immutable by nature
+    - Hard to query for specific data
+    - Data is randomly scattered on an index. Good for distribution, poor for iteration over ranges.
+    - The precedent is set by Merkle-Patricia-Tree based stores, and these are much harder to elegantly optimize,
+      and problematic in some ways even today.
+
+#### What needs to be stored
+
+State:
+
+```
+# Versioning
+genesis_time: uint64                                              -- once
+slot: Slot                                                        -- every slot (overwrite)
+fork: Fork                                                        -- every fork (overwrite)
+# History                                                         
+latest_block_header: BeaconBlockHeader                            
+block_roots: Vector[Hash, SLOTS_PER_HISTORICAL_ROOT]              -- every slot (overwrite 1)
+state_roots: Vector[Hash, SLOTS_PER_HISTORICAL_ROOT]              -- every slot (overwrite 1)
+historical_roots: List[Hash, HISTORICAL_ROOTS_LIMIT]              -- every 2**13 slots (13 hours) (add 1)
+# Eth1            
+eth1_data: Eth1Data                                               -- any block, assume 1/1024 slots. (overwrite 1)
+eth1_data_votes: List[Eth1Data, SLOTS_PER_ETH1_VOTING_PERIOD]     -- every block (add 1)
+eth1_deposit_index: uint64                                        -- any block (overwrite)
+# Registry            
+validators: List[Validator, VALIDATOR_REGISTRY_LIMIT]             -- every epoch (overwrite any), less likely every block 
+balances: List[Gwei, VALIDATOR_REGISTRY_LIMIT]                    -- every block (overwrite any)
+# Shuffling            
+start_shard: Shard                                                -- every epoch (overwrite)
+randao_mixes: Vector[Hash, EPOCHS_PER_HISTORICAL_VECTOR]          -- every block (overwrite)
+active_index_roots: Vector[Hash, EPOCHS_PER_HISTORICAL_VECTOR]        -- every epoch (overwrite 1)
+compact_committees_roots: Vector[Hash, EPOCHS_PER_HISTORICAL_VECTOR]  -- every epoch (overwrite 1)
+# Slashings
+slashings: Vector[Gwei, EPOCHS_PER_SLASHINGS_VECTOR]              -- every epoch (overwrite 1)
+# Attestations
+previous_epoch_attestations: List[PendingAttestation, MAX_ATTESTATIONS * SLOTS_PER_EPOCH]  -- every block (add a few), every epoch reset
+current_epoch_attestations: List[PendingAttestation, MAX_ATTESTATIONS * SLOTS_PER_EPOCH]   -- every block (add a few), every epoch reset
+# Crosslinks
+previous_crosslinks: Vector[Crosslink, SHARD_COUNT]               -- every epoch (overwrite all, potentially a subset)
+current_crosslinks: Vector[Crosslink, SHARD_COUNT]                -- every epoch (overwrite all, potentially a subset)
+# Finality
+justification_bits: Bitvector[JUSTIFICATION_BITS_LENGTH]          -- every epoch
+previous_justified_checkpoint: Checkpoint                         -- every epoch (overwrite potentially)
+current_justified_checkpoint: Checkpoint                          -- every epoch (overwrite potentially)
+finalized_checkpoint: Checkpoint                                  -- every epoch (overwrite potentially)
+```
+
+The data that is overwritten more often than every epoch can be restored by re-applying the blocks on top of the state of the epoch start.
+However, storing the full-epoch state may sitll include duplicate data, as a few big arrays only change a little every epoch.
+This data (`block_roots`, `state_roots`, `historical_roots`, `active_index_roots`, `compact_committees_roots`, `slashings`)
+ could be separated out.
+
+The more advanced alternative would be to create a merkle-DB for binary trees, and overlay a custom index for each type of content you need.
+If unified with hash-tree-root, this may be a good way to re-hash a state efficiently (i.e. use unchanged tree nodes).  
+
+#### Trade-offs
+
+Simplicity is key now for testnets, and storing a state per epoch may work well enough.
+For larger mainnet states a hybrid solution, or a full merkle-based store may be interesting, to speed up hashing and build big historic proofs easily.
+
+This is a work-in-progress, and does not need to be perfect right away for interoperability tests,
+ as storage is only a problem after running for prolonged amounts of time.
 
 ----
 
